@@ -296,10 +296,10 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
             linuxdvb_err("VIDEO_CONTINUE: ERROR %d, %s\n", errno, strerror(errno));
         }
 
-        if (ioctl( videofd, VIDEO_CLEAR_BUFFER) == -1)
-        {
-            linuxdvb_err("VIDEO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
-        }
+        //if (ioctl( videofd, VIDEO_CLEAR_BUFFER) == -1)
+        //{
+            //linuxdvb_err("VIDEO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
+        //}
     }
     if (audio && audiofd != -1) {
         char * Encoding = NULL;
