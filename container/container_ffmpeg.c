@@ -959,7 +959,9 @@ static void FFMPEGThread(Context_t *context)
                         avOut.infoFlags = 1; // TS container
                     }
 
-                    if (Write(context->output->video->Write, context, &avOut, pts, PACING_STREAM_VIDEO) < 0)
+                    //if (Write(context->output->video->Write, context, &avOut, pts, PACING_STREAM_VIDEO) < 0)
+                    int64_t videoPacingPts = (dts != INVALID_PTS_VALUE) ? dts : pts;
+                    if (Write(context->output->video->Write, context, &avOut, videoPacingPts, PACING_STREAM_VIDEO) < 0)
                     {
                         ffmpeg_err("writing data to video device failed\n");
                     }
