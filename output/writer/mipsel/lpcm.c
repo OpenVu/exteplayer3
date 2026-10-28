@@ -100,6 +100,10 @@ static uint8_t *p_frame_buffer = 0;
  * - dynamic range (8 bits) 0x80 == neutral
  */
 
+void LinuxDvbBuffSetPts(int64_t pts);
+
+#define LPCM_MAX_FRAMES_PER_PES 12
+
 static int32_t reset()
 {
     initialHeader = 1;
@@ -112,43 +116,27 @@ static int32_t writeData(void *_call)
 
     lpcm_printf(10, "\n");
 
-    if (!call)
+    if (!call || !call->data || (call->len <= 0) || (call->fd < 0))
     {
-        lpcm_err("call data is NULL...\n");
-        return 0;
-    }
-
-    lpcm_printf(10, "AudioPts %lld\n", call->Pts);
-
-    if (!call->data || (call->len <= 0))
-    {
-        lpcm_err("parsing NULL Data. ignoring...\n");
-        return 0;
-    }
-
-    if (call->fd < 0)
-    {
-        lpcm_err("file pointer < 0. ignoring ...\n");
         return 0;
     }
 
     pcmPrivateData_t *pcmPrivateData = (pcmPrivateData_t*)call->private_data;
 
-    int32_t i_rate     = (int32_t)pcmPrivateData->sample_rate;
-    int32_t i_channels = (int32_t)pcmPrivateData->channels;
+    int32_t i_rate       = (int32_t)pcmPrivateData->sample_rate;
+    int32_t i_channels   = (int32_t)pcmPrivateData->channels;
     int32_t i_nb_samples = call->len / (i_channels * 2);
-    int32_t i_ret_size = 0;
-    if( i_channels > 8 )
+    int32_t i_ret_size   = 0;
+
+    if (i_channels > 8 || i_channels <= 0)
     {
-        lpcm_err("Error DVD LPCM supports a maximum of eight channels i_channels[%d]\n", i_channels);
+        lpcm_err("Error DVD LPCM invalid channels [%d]\n", i_channels);
         return 0;
     }
 
-    if( pcmPrivateData->bResampling || NULL == p_buffer )
+    if (pcmPrivateData->bResampling || NULL == p_buffer)
     {
-        lpcm_printf(1, "i_rate: [%d]\n", i_rate);
-        lpcm_printf(1, "i_channels: [%d]\n", i_channels);
-        switch( i_rate )
+        switch (i_rate)
         {
         case 48000:
             i_freq_code = 0;
@@ -167,76 +155,89 @@ static int32_t writeData(void *_call)
             return 0;
         }
 
-        /* In DVD LCPM, a frame is always 150 PTS ticks. */
+        /* In DVD LPCM, a frame is always 150 PTS ticks. */
         i_frame_samples = i_rate * 150 / 90000;
-        i_frame_size = i_frame_samples * i_channels * 2 + LLPCM_VOB_HEADER_LEN;
-        if(NULL != p_buffer)
+        i_frame_size    = i_frame_samples * i_channels * 2;
+        if (NULL != p_buffer)
         {
             free(p_buffer);
         }
         p_buffer = malloc(i_frame_samples * i_channels * 16);
 
-        if(NULL != p_frame_buffer)
+        if (NULL != p_frame_buffer)
         {
             free(p_frame_buffer);
         }
-        p_frame_buffer = malloc(i_frame_size);
-        i_buffer_used = 0;
-        i_frame_num = 0;
+        p_frame_buffer  = malloc(i_frame_size * LPCM_MAX_FRAMES_PER_PES + LLPCM_VOB_HEADER_LEN);
+        i_buffer_used   = 0;
+        i_frame_num     = 0;
         i_bitspersample = 16;
     }
 
-    const int i_num_frames = ( i_buffer_used + i_nb_samples ) / i_frame_samples;
-    const int i_leftover_samples = ( i_buffer_used + i_nb_samples ) % i_frame_samples;
-    const int i_start_offset = -i_buffer_used;
+    const int i_num_frames       = (i_buffer_used + i_nb_samples) / i_frame_samples;
+    const int i_leftover_samples = (i_buffer_used + i_nb_samples) % i_frame_samples;
+    const int i_start_offset     = -i_buffer_used;
 
     int32_t i_bytes_consumed = 0;
     int32_t i = 0;
-    for ( i = 0; i < i_num_frames; ++i )
+
+    while (i < i_num_frames)
     {
+        int batch_frames = i_num_frames - i;
+        if (batch_frames > LPCM_MAX_FRAMES_PER_PES)
+        {
+            batch_frames = LPCM_MAX_FRAMES_PER_PES;
+        }
 
         uint8_t *frame = (uint8_t *)p_frame_buffer;
-        frame[0] = 1;  /* one frame in packet */
+        frame[0] = (uint8_t)batch_frames; /* عدد الإطارات المدمجة في حزمة الـ PES */
         frame[1] = 0;
-        frame[2] = 0;  /* no first access unit */
-        frame[3] = (i_frame_num + i) & 0x1f;  /* no emphasis, no mute */
+        frame[2] = 0x03;                  /* first access unit pointer */
+        frame[3] = i_frame_num & 0x1f;
         frame[4] = (i_freq_code << 4) | (i_channels - 1);
-        frame[5] = 0x80;  /* neutral dynamic range */
+        frame[5] = 0x80;                  /* neutral dynamic range */
 
-        const int i_consume_samples = i_frame_samples - i_buffer_used;
-        const int i_kept_bytes = i_buffer_used * i_channels * 2;
-        const int i_consume_bytes = i_consume_samples * i_channels * 2;
+        int32_t batch_samples_needed = batch_frames * i_frame_samples - i_buffer_used;
+        int32_t i_kept_bytes         = i_buffer_used * i_channels * 2;
+        int32_t i_consume_bytes      = batch_samples_needed * i_channels * 2;
+        int32_t payload_size         = i_kept_bytes + i_consume_bytes + LLPCM_VOB_HEADER_LEN;
 
 #ifdef WORDS_BIGENDIAN
-        memcpy( frame + 6, p_buffer, i_kept_bytes );
-        memcpy( frame + 6 + i_kept_bytes, call->data + i_bytes_consumed, i_consume_bytes );
+        if (i_kept_bytes > 0)
+            memcpy(frame + LLPCM_VOB_HEADER_LEN, p_buffer, i_kept_bytes);
+        memcpy(frame + LLPCM_VOB_HEADER_LEN + i_kept_bytes, call->data + i_bytes_consumed, i_consume_bytes);
 #else
-       swab( p_buffer, frame + 6, i_kept_bytes );
-       swab( call->data + i_bytes_consumed, frame + 6 + i_kept_bytes, i_consume_bytes );
+        if (i_kept_bytes > 0)
+            swab(p_buffer, frame + LLPCM_VOB_HEADER_LEN, i_kept_bytes);
+        swab(call->data + i_bytes_consumed, frame + LLPCM_VOB_HEADER_LEN + i_kept_bytes, i_consume_bytes);
 #endif
 
-        i_frame_num++;
-        i_buffer_used = 0;
+        uint64_t this_pts = call->Pts + (int64_t)(i * i_frame_samples + i_start_offset) * 90000 / i_rate;
+
+        i_frame_num      += batch_frames;
+        i                += batch_frames;
+        i_buffer_used     = 0;
         i_bytes_consumed += i_consume_bytes;
 
-        /* We need to find i_length by means of next_pts due to possible roundoff errors. */
-        uint64_t this_pts = call->Pts + (i * i_frame_samples + i_start_offset) * 90000 / i_rate;
+        uint32_t pes_header_size = InsertPesHeader(PesHeader, payload_size + 1, MPEG_AUDIO_PES_START_CODE, this_pts, 0);
+        PesHeader[pes_header_size++] = 0xa0;
 
-        uint32_t pes_header_size = 0;
-        pes_header_size = InsertPesHeader(PesHeader, i_frame_size+1, MPEG_AUDIO_PES_START_CODE, this_pts, 0);
-
-        PesHeader[pes_header_size] = 0xa0;
-        pes_header_size += 1;
+        LinuxDvbBuffSetPts(this_pts);
 
         struct iovec iov[2];
         iov[0].iov_base = PesHeader;
         iov[0].iov_len  = pes_header_size;
         iov[1].iov_base = frame;
-        iov[1].iov_len  = i_frame_size;
+        iov[1].iov_len  = payload_size;
         i_ret_size += call->WriteV(call->fd, iov, 2);
     }
 
-    memcpy( p_buffer, call->data + i_bytes_consumed, i_leftover_samples * i_channels * 2 );
+    if (i_leftover_samples > 0)
+    {
+        memcpy(p_buffer + (i_buffer_used * i_channels * 2),
+               call->data + i_bytes_consumed,
+               (i_leftover_samples - i_buffer_used) * i_channels * 2);
+    }
     i_buffer_used = i_leftover_samples;
 
     return i_ret_size;
