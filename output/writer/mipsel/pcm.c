@@ -74,6 +74,7 @@ static uint32_t fixed_bufferfilled;
 /* ***************************** */
 /* Prototypes                    */
 /* ***************************** */
+void LinuxDvbBuffSetPts(int64_t pts);
 
 /* ***************************** */
 /* MISC Functions                */
@@ -207,6 +208,22 @@ static int32_t writeData(void *_call)
         pcm_printf(40, "PCM fixed_buffersize [%u] [%s]\n", fixed_buffersize, LE ? "LE":"BE");
     }
 
+    if (call->Pts != INVALID_PTS_VALUE && fixed_buffersize > 0)
+    {
+        uint64_t expected_pts = call->Pts;
+        uint64_t buffered_pts = (fixed_bufferfilled * fixed_bufferduration) / fixed_buffersize;
+        if (expected_pts >= buffered_pts)
+        {
+            expected_pts -= buffered_pts;
+        }
+        int64_t diff = (int64_t)expected_pts - (int64_t)fixed_buffertimestamp;
+        /* إذا تجاوز الانحراف 40ms نعيد ضبط الطابع الزمني فوراً */
+        if (diff > 3600 || diff < -3600)
+        {
+            fixed_buffertimestamp = expected_pts;
+        }
+    }
+
     while (size > 0)
     {
         uint32_t cpSize = (fixed_buffersize - fixed_bufferfilled);
@@ -251,6 +268,7 @@ static int32_t writeData(void *_call)
         iov[0].iov_len  = headerSize;
         iov[1].iov_base = fixed_buffer;
         iov[1].iov_len  = fixed_buffersize;
+        LinuxDvbBuffSetPts(fixed_buffertimestamp);
         call->WriteV(call->fd, iov, 2);
         fixed_buffertimestamp += fixed_bufferduration;
     }
