@@ -317,6 +317,10 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
         else
         {
             linuxdvb_printf(20, "found writer %s for encoding %s\n", writer->caps->name, Encoding);
+            if (STB_HISILICON == GetSTBType())
+            {
+                ioctl(audiofd, AUDIO_SET_AV_SYNC, context->playback->AVSync);
+            }
             ret = ioctl( audiofd, AUDIO_SET_BYPASS_MODE, LinuxDvbMapBypassMode(writer->caps->dvbStreamType, true));
             if (ret < 0) ret = ioctl( audiofd, AUDIO_SET_BYPASS_MODE, LinuxDvbMapBypassMode(writer->caps->dvbStreamType, false));
             if (ret < 0)
