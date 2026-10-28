@@ -1199,12 +1199,16 @@ static void FFMPEGThread(Context_t *context)
                             ffmpeg_err("av_samples_alloc: %d\n", -e);
                             continue;
                         }
-                        int64_t next_in_pts = av_rescale(wrapped_frame_get_best_effort_timestamp(decoded_frame),
-                                         ((AVStream*) audioTrack->stream)->time_base.num * (int64_t)out_sample_rate * c->sample_rate,
-                                         ((AVStream*) audioTrack->stream)->time_base.den);
-                        int64_t next_out_pts = av_rescale(swr_next_pts(swr, next_in_pts),
-                                         ((AVStream*) audioTrack->stream)->time_base.den,
-                                         ((AVStream*) audioTrack->stream)->time_base.num * (int64_t)out_sample_rate * c->sample_rate);
+                        int64_t best_effort_ts = wrapped_frame_get_best_effort_timestamp(decoded_frame);
+                        int64_t next_in_pts = (best_effort_ts != AV_NOPTS_VALUE) ?
+                                         av_rescale(best_effort_ts,
+                                             ((AVStream*) audioTrack->stream)->time_base.num * (int64_t)out_sample_rate * c->sample_rate,
+                                             ((AVStream*) audioTrack->stream)->time_base.den) : AV_NOPTS_VALUE;
+                        int64_t swr_pts = swr_next_pts(swr, next_in_pts);
+                        int64_t next_out_pts = (swr_pts != AV_NOPTS_VALUE) ?
+                                         av_rescale(swr_pts,
+                                             ((AVStream*) audioTrack->stream)->time_base.den,
+                                             ((AVStream*) audioTrack->stream)->time_base.num * (int64_t)out_sample_rate * c->sample_rate) : packet.pts;
 
                         currentAudioPts = audioTrack->pts = pts = calcPts(cAVIdx, audioTrack->stream, next_out_pts);
                         out_samples = swr_convert(swr, &output[0], out_samples, (const uint8_t **) &decoded_frame->data[0], in_samples);
